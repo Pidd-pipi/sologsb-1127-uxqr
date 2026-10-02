@@ -3,6 +3,8 @@ import type { AccessPoint } from '../types/point';
 import type { Inspection } from '../types/inspection';
 import type { RouteSegment } from '../types/route';
 import type { RectifyPlan } from '../types/rectify';
+import type { ElevatorService } from '../types/elevator';
+import type { Itinerary } from '../types/itinerary';
 import { addDays, makeId, todayStr, toPlain } from '../utils/format';
 import { judgeInspection } from '../utils/routeCheck';
 
@@ -13,12 +15,15 @@ export const DB_NAME = 'gbaccessmap-db';
  * v1 建 points / inspections
  * v2 加 routes 表与 pointId 索引
  * v3 加 rectifies 表，并为历史不合格核验补建整改条目
+ * v4 加 elevatorServices / itineraries 表，写入电梯运行档案与无障碍联络线
  */
 class AccessMapDb extends Dexie {
   points!: Table<AccessPoint, string>;
   inspections!: Table<Inspection, string>;
   routes!: Table<RouteSegment, string>;
   rectifies!: Table<RectifyPlan, string>;
+  elevatorServices!: Table<ElevatorService, string>;
+  itineraries!: Table<Itinerary, string>;
 
   constructor() {
     super(DB_NAME);
@@ -70,6 +75,26 @@ class AccessMapDb extends Dexie {
             status: '待整改',
             createdAt: new Date().toISOString(),
           });
+        }
+      });
+    this.version(4)
+      .stores({
+        points: 'id, code, facilityType, district, name',
+        inspections: 'id, pointId, date, conclusion',
+        routes: 'id, routeName, fromPointId, toPointId, order',
+        rectifies: 'id, pointId, status, deadline',
+        elevatorServices: 'id, pointId, status, allDay',
+        itineraries: 'id, originPointId, destinationPointId, status, version',
+      })
+      .upgrade(async (tx) => {
+        // v4：写入无障碍电梯运行档案与无障碍联络线（已存在则跳过）
+        const elvTable = tx.table('elevatorServices');
+        if (!(await elvTable.count())) {
+          await elvTable.bulkPut(seedElevatorServices());
+        }
+        const routeTable = tx.table('routes');
+        if ((await routeTable.count()) <= SEED_ROUTES.length) {
+          await routeTable.bulkPut(seedConnectingRoutes());
         }
       });
   }
@@ -299,6 +324,118 @@ const SEED_ROUTES: SeedRoute[] = [
   },
 ];
 
+/** 无障碍联络线：把无障碍电梯点位织入步行路网，便于行程规划途经电梯 */
+const SEED_CONNECTING: SeedRoute[] = [
+  {
+    routeName: '中部无障碍联络线',
+    pointIds: ['pt-1004', 'pt-1003', 'pt-1005'],
+    length: 1130,
+    obstacleCount: 0,
+    stepCount: 0,
+    curbHeight: 2,
+  },
+  {
+    routeName: '西部无障碍联络线',
+    pointIds: ['pt-1006', 'pt-1008', 'pt-1007'],
+    length: 840,
+    obstacleCount: 0,
+    stepCount: 0,
+    curbHeight: 2,
+  },
+  {
+    routeName: '南部无障碍联络线',
+    pointIds: ['pt-1001', 'pt-1004'],
+    length: 430,
+    obstacleCount: 0,
+    stepCount: 0,
+    curbHeight: 2,
+  },
+  {
+    routeName: '东部无障碍联络线',
+    pointIds: ['pt-1002', 'pt-1005', 'pt-1006'],
+    length: 1270,
+    obstacleCount: 0,
+    stepCount: 0,
+    curbHeight: 2,
+  },
+];
+
+function buildRouteSegments(list: SeedRoute[], idPrefix: string, now: string): RouteSegment[] {
+  const rows: RouteSegment[] = [];
+  list.forEach((r, ri) => {
+    for (let i = 1; i < r.pointIds.length; i += 1) {
+      rows.push({
+        id: `${idPrefix}-${ri + 1}-${i}`,
+        routeName: r.routeName,
+        fromPointId: r.pointIds[i - 1],
+        toPointId: r.pointIds[i],
+        length: Math.round((r.length / (r.pointIds.length - 1)) * 10) / 10,
+        obstacleCount: r.obstacleCount,
+        stepCount: r.stepCount,
+        curbHeight: r.curbHeight,
+        wheelchairPassable: r.stepCount === 0 && r.curbHeight <= 3 && r.obstacleCount <= 2,
+        order: i,
+        createdAt: now,
+      });
+    }
+  });
+  return rows;
+}
+
+/** 无障碍电梯运行档案：开放时段 / 检修窗口 / 班次 / 高峰容量 */
+function seedElevatorServices(): ElevatorService[] {
+  const now = new Date().toISOString();
+  return [
+    {
+      id: 'elv-seed-1',
+      pointId: 'pt-1003',
+      allDay: false,
+      status: '正常',
+      suspendedReason: '',
+      resumeAt: '',
+      openWindows: [{ weekdays: [], startMin: 360, endMin: 1320 }], // 06:00-22:00
+      maintenance: [
+        { id: 'mnt-seed-1', kind: 'weekly', weekday: 2, startMin: 840, endMin: 960, reason: '周检修' }, // 周二 14:00-16:00
+      ],
+      schedule: {
+        kind: 'interval',
+        intervalMin: 15,
+        capacityPerTrip: 2,
+        rideMin: 3,
+        peakWindows: [
+          { startMin: 450, endMin: 540, peakCapacity: 0, label: '早高峰' },
+          { startMin: 1020, endMin: 1140, peakCapacity: 0, label: '晚高峰' },
+        ],
+      },
+      updatedAt: now,
+    },
+    {
+      id: 'elv-seed-2',
+      pointId: 'pt-1008',
+      allDay: false,
+      status: '正常',
+      suspendedReason: '',
+      resumeAt: '',
+      openWindows: [{ weekdays: [], startMin: 420, endMin: 1200 }], // 07:00-20:00
+      maintenance: [
+        { id: 'mnt-seed-2', kind: 'weekly', weekday: 4, startMin: 600, endMin: 660, reason: '半月检' }, // 周四 10:00-11:00
+      ],
+      schedule: {
+        kind: 'fixed',
+        fixedMinutes: [420, 480, 540, 600, 660, 720, 780, 840, 900, 960, 1020, 1080, 1140],
+        capacityPerTrip: 1,
+        rideMin: 2,
+        peakWindows: [{ startMin: 450, endMin: 510, peakCapacity: 0, label: '早高峰' }],
+      },
+      updatedAt: now,
+    },
+  ];
+}
+
+function seedConnectingRoutes(): RouteSegment[] {
+  return buildRouteSegments(SEED_CONNECTING, 'rts-seed-c', new Date().toISOString());
+}
+
 function buildSeed() {
   const now = new Date().toISOString();
   const today = todayStr();
@@ -326,24 +463,10 @@ function buildSeed() {
       createdAt: now,
     };
   });
-  const routes: RouteSegment[] = [];
-  SEED_ROUTES.forEach((r, ri) => {
-    for (let i = 1; i < r.pointIds.length; i += 1) {
-      routes.push({
-        id: `rts-seed-${ri + 1}-${i}`,
-        routeName: r.routeName,
-        fromPointId: r.pointIds[i - 1],
-        toPointId: r.pointIds[i],
-        length: Math.round((r.length / (r.pointIds.length - 1)) * 10) / 10,
-        obstacleCount: r.obstacleCount,
-        stepCount: r.stepCount,
-        curbHeight: r.curbHeight,
-        wheelchairPassable: r.stepCount === 0 && r.curbHeight <= 3 && r.obstacleCount <= 2,
-        order: i,
-        createdAt: now,
-      });
-    }
-  });
+  const routes: RouteSegment[] = [
+    ...buildRouteSegments(SEED_ROUTES, 'rts-seed', now),
+    ...buildRouteSegments(SEED_CONNECTING, 'rts-seed-c', now),
+  ];
   const rectifies: RectifyPlan[] = [
     {
       id: 'rct-seed-1',
@@ -386,7 +509,7 @@ function buildSeed() {
       createdAt: now,
     },
   ];
-  return { points, inspections, routes, rectifies };
+  return { points, inspections, routes, rectifies, elevatorServices: seedElevatorServices() };
 }
 
 /** 首次打开时写入示例数据；已有数据则跳过 */
@@ -394,12 +517,21 @@ export async function ensureSeed(): Promise<void> {
   const count = await db.points.count();
   if (count > 0) return;
   const seed = toPlain(buildSeed());
-  await db.transaction('rw', db.points, db.inspections, db.routes, db.rectifies, async () => {
-    await db.points.bulkPut(seed.points);
-    await db.inspections.bulkPut(seed.inspections);
-    await db.routes.bulkPut(seed.routes);
-    await db.rectifies.bulkPut(seed.rectifies);
-  });
+  await db.transaction(
+    'rw',
+    db.points,
+    db.inspections,
+    db.routes,
+    db.rectifies,
+    db.elevatorServices,
+    async () => {
+      await db.points.bulkPut(seed.points);
+      await db.inspections.bulkPut(seed.inspections);
+      await db.routes.bulkPut(seed.routes);
+      await db.rectifies.bulkPut(seed.rectifies);
+      await db.elevatorServices.bulkPut(seed.elevatorServices);
+    },
+  );
 }
 
 export { makeId };

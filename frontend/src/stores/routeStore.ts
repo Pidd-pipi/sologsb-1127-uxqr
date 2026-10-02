@@ -1,11 +1,10 @@
 import { create } from 'zustand';
 import { db } from '../db';
 import type { AccessPoint } from '../types/point';
-import type { RouteSegment } from '../types/route';
+import type { RouteSegment, RouteVerdict, SegmentAccessMode } from '../types/route';
 import { makeId, toPlain } from '../utils/format';
 import { judgeSegment, buildVerdict } from '../utils/routeCheck';
 import { segmentLength } from '../utils/geo';
-import type { RouteVerdict } from '../types/route';
 
 /** 编辑中的路段（尚未落库） */
 export interface DraftSegment {
@@ -16,8 +15,25 @@ export interface DraftSegment {
   obstacleCount: number;
   stepCount: number;
   curbHeight: number;
+  durationMinutes: number;
+  transferWaitMinutes: number;
   order: number;
 }
+
+export type SegmentSchedulePatch = Partial<
+  Pick<
+    RouteSegment,
+    | 'accessMode'
+    | 'service'
+    | 'offPeakCapacity'
+    | 'peakCapacity'
+    | 'peakWindows'
+    | 'maintenanceWindows'
+    | 'temporaryClosures'
+    | 'dynamicStatus'
+    | 'upgradedAllDay'
+  >
+>;
 
 interface RouteState {
   segments: RouteSegment[];
@@ -37,11 +53,20 @@ interface RouteState {
   removeDraftSegment: (key: string) => void;
   computeVerdict: () => RouteVerdict;
   saveRoute: () => Promise<number>;
+  updateSegmentSchedule: (id: string, patch: SegmentSchedulePatch) => Promise<RouteSegment>;
   resetDraft: () => void;
 }
 
 function newKey(): string {
   return `seg-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function defaultService(accessMode: SegmentAccessMode): RouteSegment['service'] {
+  return {
+    start: '06:00',
+    end: '23:00',
+    headwayMinutes: accessMode === 'scheduled' ? 15 : 0,
+  };
 }
 
 export const useRouteStore = create<RouteState>((set, get) => ({
@@ -99,6 +124,11 @@ export const useRouteStore = create<RouteState>((set, get) => ({
         obstacleCount: 0,
         stepCount: 0,
         curbHeight: 2,
+        durationMinutes: Math.max(1, Math.round(segmentLength(
+          { lng: from.lng, lat: from.lat },
+          { lng: to.lng, lat: to.lat },
+        ) / 75)),
+        transferWaitMinutes: 2,
         order: i,
       });
     }
@@ -140,6 +170,19 @@ export const useRouteStore = create<RouteState>((set, get) => ({
         curbHeight: seg.curbHeight,
         wheelchairPassable: judgeSegment(seg).passable,
         order: seg.order,
+        durationMinutes: Math.max(1, seg.durationMinutes),
+        transferWaitMinutes: seg.transferWaitMinutes,
+        accessMode: 'all_day',
+        service: defaultService('all_day'),
+        offPeakCapacity: 2,
+        peakCapacity: 2,
+        peakWindows: [],
+        maintenanceWindows: [],
+        temporaryClosures: [],
+        dynamicStatus: 'normal',
+        upgradedAllDay: false,
+        routeVersion: 1,
+        scheduleVersion: 1,
         createdAt: new Date().toISOString(),
       }),
     );
@@ -152,6 +195,35 @@ export const useRouteStore = create<RouteState>((set, get) => ({
       ),
     });
     return rows.length;
+  },
+
+  updateSegmentSchedule: async (id, patch) => {
+    const segment = await db.routes.get(id);
+    if (!segment) throw new Error('路线段不存在');
+
+    const next: RouteSegment = {
+      ...segment,
+      ...patch,
+      service: patch.service ? { ...segment.service, ...patch.service } : segment.service,
+      peakWindows: patch.peakWindows ?? segment.peakWindows,
+      maintenanceWindows: patch.maintenanceWindows ?? segment.maintenanceWindows,
+      temporaryClosures: patch.temporaryClosures ?? segment.temporaryClosures,
+    };
+    const structuralChanged =
+      patch.upgradedAllDay !== undefined ||
+      patch.accessMode !== undefined ||
+      patch.service?.start !== undefined ||
+      patch.service?.end !== undefined;
+    next.routeVersion = segment.routeVersion + (structuralChanged ? 1 : 0);
+    next.scheduleVersion = segment.scheduleVersion + 1;
+    await db.routes.put(next);
+    const all = await db.routes.toArray();
+    set({
+      segments: all.sort((a, b) =>
+        a.routeName === b.routeName ? a.order - b.order : a.routeName.localeCompare(b.routeName),
+      ),
+    });
+    return next;
   },
 
   resetDraft: () => set({ draftSegments: [], verdict: null, chain: [] }),

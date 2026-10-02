@@ -5,12 +5,14 @@ import {
   PlusCircleOutlined,
   EnvironmentOutlined,
   NodeIndexOutlined,
+  ScheduleOutlined,
   ToolOutlined,
   DatabaseOutlined,
 } from '@ant-design/icons';
 import { Link, Outlet, useLocation } from 'react-router-dom';
 import { usePointStore } from '../stores/pointStore';
 import { useRouteStore } from '../stores/routeStore';
+import { useTripStore } from '../stores/tripStore';
 
 const { Sider, Content, Header } = Layout;
 
@@ -18,6 +20,7 @@ const MENU = [
   { key: '/', icon: <HomeOutlined />, label: '核验总览' },
   { key: '/points/new', icon: <PlusCircleOutlined />, label: '点位登记' },
   { key: '/routes', icon: <NodeIndexOutlined />, label: '通行路线' },
+  { key: '/trips', icon: <ScheduleOutlined />, label: '轮椅行程' },
   { key: '/map', icon: <EnvironmentOutlined />, label: '设施地图' },
   { key: '/rectify', icon: <ToolOutlined />, label: '整改清单' },
 ];
@@ -26,6 +29,7 @@ export default function AppLayout() {
   const location = useLocation();
   const loadPoints = usePointStore((s) => s.load);
   const loadRoutes = useRouteStore((s) => s.load);
+  const loadTrips = useTripStore((s) => s.load);
   const pointCount = usePointStore((s) => s.points.length);
   const inspectionCount = usePointStore((s) => s.inspections.length);
   const hasKey = Boolean((import.meta.env.VITE_AMAP_KEY || '').trim());
@@ -33,7 +37,8 @@ export default function AppLayout() {
   useEffect(() => {
     void loadPoints();
     void loadRoutes();
-  }, [loadPoints, loadRoutes]);
+    void loadTrips();
+  }, [loadPoints, loadRoutes, loadTrips]);
 
   const selectedKey =
     MENU.map((m) => m.key)

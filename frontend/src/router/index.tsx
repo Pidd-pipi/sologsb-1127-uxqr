@@ -4,6 +4,7 @@ import Overview from '../pages/Overview';
 import PointNew from '../pages/PointNew';
 import PointDetail from '../pages/PointDetail';
 import Routes from '../pages/Routes';
+import TripPlanner from '../pages/TripPlanner';
 import MapView from '../pages/MapView';
 import Rectify from '../pages/Rectify';
 
@@ -16,6 +17,7 @@ export const router = createBrowserRouter([
       { path: 'points/new', element: <PointNew /> },
       { path: 'points/:id', element: <PointDetail /> },
       { path: 'routes', element: <Routes /> },
+      { path: 'trips', element: <TripPlanner /> },
       { path: 'map', element: <MapView /> },
       { path: 'rectify', element: <Rectify /> },
       { path: '*', element: <Navigate to="/" replace /> },
